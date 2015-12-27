@@ -92,18 +92,31 @@ void mempool_init(mempool_t* mempool)
         mempool->chunks[chunk_type].array = (mempool_chunk_t*)malloc(chunk_number * sizeof(mempool_chunk_t));
         memset(mempool->chunks[chunk_type].array, 0, chunk_number * sizeof(mempool_chunk_t));
         mempool->available_chunks[chunk_type] = (mempool_chunk_t**)malloc(chunk_number * sizeof(mempool_chunk_t*));
+        uint8_t* buffer = (uint8_t*)malloc(chunk_number * chunk_size * sizeof(uint8_t));
         for (i = 0; i < chunk_number; i++)
         {
             mempool_chunk_t* chunk = mempool->chunks[chunk_type].array + i;
-            chunk->data = (uint8_t*)malloc(chunk_number * chunk_size * sizeof(uint8_t));
+            chunk->data = buffer;
             chunk->max_size = chunk_size;
             chunk->type = chunk_type;
             mempool->available_chunks[chunk_type][i] = chunk;
+            buffer += chunk_size;
         }
-
     }
-
 }
+
+void mempool_term(mempool_t* mempool)
+{
+    uint32_t chunk_type;
+    for (chunk_type = CHUNK_256; chunk_type < CHUNK_MAX; chunk_type++)
+    {
+        free(mempool->chunks[chunk_type].array->data);
+        free(mempool->chunks[chunk_type].array);
+        free(mempool->available_chunks[chunk_type]);
+    }
+    memset(mempool, 0, sizeof(mempool_t));
+}
+
 
 void print_stats(mempool_stat_t* stats)
 {
@@ -119,7 +132,7 @@ float compute_avg_load(size_t size, size_t max_size, float load, uint32_t nb_loa
     return (load * nb_load + size / (float)max_size) / ((float)nb_load + 1);
 }
 
-mempool_chunk_t* mempool_get(mempool_t* mempool, size_t size)
+uint8_t* mempool_get(mempool_t* mempool, size_t size)
 {
     mempool_chunk_t* res = NULL;
     mempool_stat_t* chunk_type_stats = NULL;
@@ -127,7 +140,6 @@ mempool_chunk_t* mempool_get(mempool_t* mempool, size_t size)
     uint32_t chunk_type;
     for (chunk_type = CHUNK_256; chunk_type < CHUNK_MAX; chunk_type++)
     {
-        uint32_t chunk_number = chunk_info[chunk_type].chunk_number;
         uint32_t chunk_size = chunk_info[chunk_type].chunk_size;
         if (size < chunk_size)
         {
@@ -167,11 +179,32 @@ mempool_chunk_t* mempool_get(mempool_t* mempool, size_t size)
     {
         fprintf(stderr, "Invalid chunk\n");
     }
-    return res;
+    return res ? res->data : NULL;
 }
 
-void mempool_free(mempool_t* mempool, mempool_chunk_t* chunk)
+void mempool_free(mempool_t* mempool, uint8_t* _chunk)
 {
+    uint32_t chunk_type;
+    mempool_chunk_t* chunk = NULL;
+    for (chunk_type = CHUNK_256; chunk_type < CHUNK_MAX; chunk_type++)
+    {
+        uint32_t chunk_number = chunk_info[chunk_type].chunk_number;
+        uint32_t chunk_size = chunk_info[chunk_type].chunk_size;
+        uint8_t* start = mempool->chunks[chunk_type].array[0].data;
+        uint32_t idx = (_chunk - start) / chunk_size;
+        if (idx < chunk_number)
+        {
+            printf("Found chunk type %d idx %d\n", chunk_type, idx);
+            chunk = &mempool->chunks[chunk_type].array[idx];
+            break;
+        }
+    }
+
+    if (!chunk)
+    {
+        printf("Invalid chunk\n");
+        return;
+    }
     mempool_stat_t* chunk_type_stats = &mempool->chunks[chunk->type].stats;
     chunk_type_stats->free_nb++;
     chunk_type_stats->free_size += chunk->data_size;
@@ -194,11 +227,14 @@ int main()
 {
     mempool_t test;
     mempool_init(&test);
-    mempool_chunk_t* chunk = mempool_get(&test, 56);
+    uint8_t* chunk = mempool_get(&test, 56);
+    uint8_t* chunk2 = mempool_get(&test, 56);
     mempool_free(&test, chunk);
+    mempool_free(&test, chunk2);
     chunk = mempool_get(&test, 1024);
     mempool_free(&test, chunk);
     print_stats(&test.stats);
+    mempool_term(&test);
 
     return 0;
 }
